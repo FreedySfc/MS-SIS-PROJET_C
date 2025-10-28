@@ -1,15 +1,69 @@
-#define _POSIX_C_SOURCE 200809      // car strdup() (qui utilisé plus bas générait des erreurs) est une fonction POSIX, pas strictement standard C11, donc il faut définir une macro avant d’inclure <string.h> pour que sa déclaration soit visible.
+#define _POSIX_C_SOURCE 200809
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-/**
- * Charge la T3C en mémoire et cherche les chaînes correspondant aux condensats
- * lus sur stdin (séparés par des sauts de ligne)
- *
- * Implémentation simple : stockage en tableaux dynamiques + recherche linéaire.
- * Pour de très grands fichiers, il faudra remplacer par une table de hachage.
- */
+
+
+typedef struct Node {
+    char *digest;
+    char *word;
+    struct Node *left;
+    struct Node *right;
+} Node;
+
+/* ---- Création d’un nœud ---- */
+Node *create_node(const char *digest, const char *word) {
+    Node *node = malloc(sizeof(Node));
+    if (!node) {
+        fprintf(stderr, "Erreur d’allocation mémoire\n");
+        exit(EXIT_FAILURE);
+    }
+    node->digest = strdup(digest);
+    node->word = strdup(word);
+    node->left = node->right = NULL;
+    return node;
+}
+
+/* ---- Insertion dans l’arbre ---- */
+Node *insert_node(Node *root, const char *digest, const char *word) {
+    if (!root) return create_node(digest, word);
+
+    int cmp = strcmp(digest, root->digest);
+    if (cmp < 0)
+        root->left = insert_node(root->left, digest, word);
+    else if (cmp > 0)
+        root->right = insert_node(root->right, digest, word);
+    // Si égal, on ignore ou on peut remplacer la valeur existante
+    return root;
+}
+
+/* ---- Recherche d’un condensat ---- */
+const char *search_node(Node *root, const char *digest) {
+    if (!root) return NULL;
+
+    int cmp = strcmp(digest, root->digest);
+    if (cmp == 0)
+        return root->word;
+    else if (cmp < 0)
+        return search_node(root->left, digest);
+    else
+        return search_node(root->right, digest);
+}
+
+/* ---- Libération mémoire ---- */
+void free_tree(Node *root) {
+    if (!root) return;
+    free_tree(root->left);
+    free_tree(root->right);
+    free(root->digest);
+    free(root->word);
+    free(root);
+}
+
+/* ============================================================
+ *  Fonction principale : lookup_hashes()
+ * ============================================================ */
 void lookup_hashes(const char *t3c_file) {
     FILE *t3c = fopen(t3c_file, "r");
     if (!t3c) {
@@ -17,66 +71,37 @@ void lookup_hashes(const char *t3c_file) {
         exit(EXIT_FAILURE);
     }
 
-    // Lecture de la T3C en mémoire (table simple)
-    char **digests = NULL;
-    char **words = NULL;
+    Node *root = NULL;
     size_t count = 0;
     char line[8192];
 
+    // Charger la T3C dans l’arbre
     while (fgets(line, sizeof(line), t3c)) {
         line[strcspn(line, "\r\n")] = '\0';
         char *sep = strchr(line, ';');
         if (!sep) continue;
-
         *sep = '\0';
         char *word = line;
         char *digest = sep + 1;
 
-        char *dup_digest = strdup(digest);
-        char *dup_word = strdup(word);
-        if (!dup_digest || !dup_word) {
-            fprintf(stderr, "Erreur d'allocation mémoire\n");
-            exit(EXIT_FAILURE);
-        }
-
-        char **tmpD = realloc(digests, (count + 1) * sizeof(char *));
-        char **tmpW = realloc(words, (count + 1) * sizeof(char *));
-        if (!tmpD || !tmpW) {
-            fprintf(stderr, "Erreur d'allocation mémoire\n");
-            exit(EXIT_FAILURE);
-        }
-        digests = tmpD;
-        words = tmpW;
-
-        digests[count] = dup_digest;
-        words[count] = dup_word;
+        root = insert_node(root, digest, word);
         count++;
     }
     fclose(t3c);
 
-    fprintf(stderr, "✅ %zu entrées chargées depuis %s\n", count, t3c_file);
+    fprintf(stderr, " %zu entrées chargées depuis %s\n", count, t3c_file);
 
     // Lecture des condensats depuis stdin
     char query[256];
     while (fgets(query, sizeof(query), stdin)) {
         query[strcspn(query, "\r\n")] = '\0';
-        int found = 0;
-        for (size_t i = 0; i < count; i++) {
-            if (strcmp(digests[i], query) == 0) {
-                printf("%s\n", words[i]);
-                found = 1;
-                break;
-            }
-        }
-        if (!found) {
+        const char *result = search_node(root, query);
+        if (result)
+            printf("%s\n", result);
+        else
             printf("[non trouvé]\n");
-        }
     }
 
-    for (size_t i = 0; i < count; i++) {
-        free(digests[i]);
-        free(words[i]);
-    }
-    free(digests);
-    free(words);
+    // Libération mémoire
+    free_tree(root);
 }
